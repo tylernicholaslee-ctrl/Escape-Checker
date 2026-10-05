@@ -11,13 +11,14 @@ const required = [
   "api/fires.js",
   "api/healthz.js",
   "vercel.json",
+  "scripts/build.mjs",
 ];
 
 for (const path of required) {
   await access(new URL(path, `file://${root}`));
 }
 
-for (const path of ["public/assets/app.js", "api/fires.js", "api/healthz.js", "scripts/dev.mjs"]) {
+for (const path of ["public/assets/app.js", "api/fires.js", "api/healthz.js", "scripts/dev.mjs", "scripts/build.mjs"]) {
   const result = spawnSync(process.execPath, ["--check", `${root}${path}`], {
     encoding: "utf8",
   });
@@ -25,6 +26,16 @@ for (const path of ["public/assets/app.js", "api/fires.js", "api/healthz.js", "s
     process.stderr.write(result.stderr);
     process.exit(result.status ?? 1);
   }
+}
+
+const vercelConfig = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
+if (vercelConfig.buildCommand !== "npm run build" || vercelConfig.outputDirectory !== "dist") {
+  throw new Error("vercel.json build settings are not configured as expected");
+}
+
+const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+if (packageJson.scripts?.build !== "node scripts/build.mjs") {
+  throw new Error("package.json is missing the expected build script");
 }
 
 const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
@@ -39,4 +50,4 @@ if (health.status !== 200 || (await health.json()).status !== "ok") {
   throw new Error("Health function failed its local smoke test");
 }
 
-console.log("Static assets, JavaScript syntax, and API health smoke test passed.");
+console.log("JSON config, static assets, JavaScript syntax, and API health smoke test passed.");
