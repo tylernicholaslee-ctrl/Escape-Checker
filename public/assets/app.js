@@ -862,8 +862,20 @@ function draw(){
 
       ctx.stroke();
 
-      ctx.fillStyle=
-        css("--ink");
+      var labelX = q[0] - Math.min(r * 0.6, 80);
+      var labelY = q[1] + 4;
+
+      ctx.font = "bold 13px sans-serif";
+      ctx.textBaseline = "middle";
+
+      // white halo / outline
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = css("--surface");
+      ctx.strokeText(h.name, labelX, labelY);
+
+      // main text
+      ctx.fillStyle = css("--ink");
+      ctx.fillText(h.name, labelX, labelY);
 
       ctx.font=
         "bold 13px sans-serif";
