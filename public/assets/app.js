@@ -19,13 +19,14 @@
   var liveHazards = [];
   var liveFetchedAt = null;
   var maplibre = null;
+  var reminderWasDue = false;
 
   function fresh() {
     return {
       routes: [],
       hazards: [],
       settings: {
-        every: 30,
+        every: "monthly",
         last: null,
         buffer: 3.219
       }
@@ -44,6 +45,12 @@
           s.routes = s.routes.filter(function (r) {
             return r.name !== "Example: canyon home to Burbank";
           });
+          if (["never", "daily", "weekly", "monthly"].indexOf(s.settings.every) === -1) {
+            var legacyInterval = Number(s.settings.every);
+            s.settings.every = legacyInterval === 0 ? "never" :
+              legacyInterval === 1 ? "daily" :
+                legacyInterval === 7 ? "weekly" : "monthly";
+          }
           return s;
         }
       }
@@ -1203,12 +1210,25 @@
   }
 
   function reminderState() {
-    var e = +state.settings.every;
-    if (!e || !state.routes.length) {
+    var interval = state.settings.every;
+    if (interval === "never" || !state.routes.length) {
       return null;
     }
     var last = state.settings.last ? new Date(state.settings.last) : null;
-    var next = last ? new Date(last.getTime() + e * 864e5) : new Date();
+    var next = last ? new Date(last) : new Date();
+    if (last) {
+      if (interval === "daily") {
+        next.setDate(next.getDate() + 1);
+      } else if (interval === "weekly") {
+        next.setDate(next.getDate() + 7);
+      } else {
+        var day = next.getDate();
+        next.setDate(1);
+        next.setMonth(next.getMonth() + 1);
+        var lastDayOfMonth = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+        next.setDate(Math.min(day, lastDayOfMonth));
+      }
+    }
     return {
       due: next <= new Date(),
       next: next,
@@ -1242,7 +1262,7 @@
     $("#buffer").value = String(best);
     var rs = reminderState();
     var t;
-    if (!+state.settings.every) {
+    if (state.settings.every === "never") {
       t = "Reminders are off.";
     } else if (!state.routes.length) {
       t = "Save a route to start the reminder.";
@@ -1270,6 +1290,23 @@
     }
   }
 
+  function checkReminder() {
+    var rs = reminderState();
+    var due = Boolean(rs && rs.due);
+    renderBanners();
+    renderAlerts();
+    if (due && !reminderWasDue && "Notification" in window && Notification.permission === "granted") {
+      try {
+        new Notification("Re-check your escape routes", {
+          body: "Open Escape Route Check to see if any route is near a hazard."
+        });
+      } catch (error) {
+        console.error("Could not show the route reminder notification.", error);
+      }
+    }
+    reminderWasDue = due;
+  }
+
   function renderAll() {
     renderHome();
     renderRoutes();
@@ -1282,6 +1319,7 @@
   /* ---------- events ---------- */
   function markReviewed() {
     state.settings.last = new Date().toISOString();
+    reminderWasDue = false;
     save();
     renderAll();
   }
@@ -1313,11 +1351,12 @@
     }
   });
   $("#every").addEventListener("change", function () {
-    state.settings.every = +this.value;
+    state.settings.every = this.value;
     if (!state.settings.last && state.routes.length) {
       state.settings.last = new Date().toISOString();
     }
     save();
+    checkReminder();
     renderAll();
   });
   $("#buffer").addEventListener("change", function () {
@@ -1326,9 +1365,12 @@
     renderAll();
   });
   $("#askNotif").addEventListener("click", function () {
-    try {
-      Notification.requestPermission().then(renderAlerts);
-    } catch (e) {}
+    if (!("Notification" in window)) {
+      return;
+    }
+    Notification.requestPermission().then(renderAlerts).catch(function (error) {
+      console.error("Could not request notification permission.", error);
+    });
   });
   $("#refreshFires").addEventListener("click", loadLiveFires);
   var triedLoc = false;
@@ -1402,12 +1444,12 @@
   /* ---------- start ---------- */
   renderAll();
   loadLiveFires();
-  var rs0 = reminderState();
-  if (rs0 && rs0.due && "Notification" in window && Notification.permission === "granted") {
-    try {
-      new Notification("Re-check your escape routes", {
-        body: "Open Escape Route Check to see if any route is near a hazard."
-      });
-    } catch (e) {}
-  }
+  checkReminder();
+  setInterval(checkReminder, 60000);
+  window.addEventListener("focus", checkReminder);
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) {
+      checkReminder();
+    }
+  });
 })();

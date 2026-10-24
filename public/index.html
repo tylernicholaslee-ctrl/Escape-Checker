@@ -98,17 +98,17 @@
   <div class="card">
     <label for="every">Remind me to re-check my routes</label>
     <select id="every">
-      <option value="0">Never</option>
-      <option value="7">Every week</option>
-      <option value="30">Every month</option>
-      <option value="90">Every 3 months</option>
+      <option value="never">Never</option>
+      <option value="daily">Every day</option>
+      <option value="weekly">Once a week</option>
+      <option value="monthly">Once a month</option>
     </select>
-    <p id="remStatus" class="muted"></p>
+    <p id="remStatus" class="muted" role="status" aria-live="polite"></p>
     <div class="row">
       <button class="primary" id="markReviewed">I re-checked my routes</button>
       <button id="askNotif">Allow notifications</button>
     </div>
-    <p class="muted">The reminder appears at the top of Home and Routes whenever you open this page. Device notifications only show while the page is open in your browser.</p>
+    <p class="muted">When a reminder is due, it appears at the top of Home and Routes while this page is open. Allow notifications to also get a browser notification.</p>
   </div>
   <div class="card">
     <label for="buffer">Warn me when a route is within</label>
