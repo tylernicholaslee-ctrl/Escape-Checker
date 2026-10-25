@@ -86,29 +86,6 @@
     ];
   }
 
-  function ptSeg(p, a, b) {
-    var dx = b[0] - a[0];
-    var dy = b[1] - a[1];
-    var l2 = dx * dx + dy * dy;
-    var t = l2 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2 : 0;
-    t = Math.max(0, Math.min(1, t));
-    return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
-  }
-
-  function minDist(pts, h) {
-    var refLat = h.lat;
-    var c = proj(
-      [h.lat, h.lon], refLat);
-    var P = pts.map(function (p) {
-      return proj(p, refLat);
-    });
-    var m = Infinity;
-    for (var i = 0; i < P.length - 1; i++) {
-      m = Math.min(m, ptSeg(c, P[i], P[i + 1]));
-    }
-    return m;
-  }
-
   function lengthKm(pts) {
     var s = 0;
     for (var i = 0; i < pts.length - 1; i++) {
@@ -133,11 +110,43 @@
       return null;
     }
     state.hazards.concat(liveHazards).forEach(function (h) {
-      var clr = minDist(pts, h) - h.r;
+      var c = proj([h.lat, h.lon], h.lat);
+      var P = pts.map(function (p) {
+        return proj(p, h.lat);
+      });
+      var closest = null;
+      var alongKm = 0;
+      var traversedKm = 0;
+      for (var i = 0; i < P.length - 1; i++) {
+        var dx = P[i + 1][0] - P[i][0];
+        var dy = P[i + 1][1] - P[i][1];
+        var segmentKm = Math.hypot(dx, dy);
+        var t = segmentKm ? Math.max(0, Math.min(1,
+          ((c[0] - P[i][0]) * dx + (c[1] - P[i][1]) * dy) /
+          (segmentKm * segmentKm))) : 0;
+        var x = P[i][0] + t * dx;
+        var y = P[i][1] + t * dy;
+        var distanceKm = Math.hypot(c[0] - x, c[1] - y);
+        if (!closest || distanceKm < closest.distanceKm) {
+          closest = {
+            distanceKm: distanceKm,
+            x: x,
+            y: y,
+            dx: dx,
+            dy: dy,
+            segmentIndex: i
+          };
+          alongKm = traversedKm + t * segmentKm;
+        }
+        traversedKm += segmentKm;
+      }
+      var clr = closest.distanceKm - h.r;
       if (!worst || clr < worst.clr) {
         worst = {
           h: h,
-          clr: clr
+          clr: clr,
+          alongKm: alongKm,
+          nearest: closest
         };
       }
     });
@@ -211,6 +220,58 @@
       }
     });
     return best;
+  }
+
+  function detourPoint(hazard, side, expansion) {
+    var nearest = hazard.nearest;
+    var dx = nearest.x - proj([hazard.h.lat, hazard.h.lon], hazard.h.lat)[0];
+    var dy = nearest.y - proj([hazard.h.lat, hazard.h.lon], hazard.h.lat)[1];
+    var distance = Math.hypot(dx, dy);
+    if (distance < .01) {
+      var segmentLength = Math.hypot(nearest.dx, nearest.dy) || 1;
+      dx = -nearest.dy / segmentLength;
+      dy = nearest.dx / segmentLength;
+    } else {
+      dx /= distance;
+      dy /= distance;
+    }
+    var radius = hazard.h.r + state.settings.buffer + 2 + expansion * 2.5;
+    var x = dx * radius * side;
+    var y = dy * radius * side;
+    var cosLat = Math.max(.01, Math.abs(Math.cos(hazard.h.lat * Math.PI / 180)));
+    return [
+      hazard.h.lat + y / 110.57,
+      hazard.h.lon + x / (111.32 * cosLat)
+    ];
+  }
+
+  function detourStopIndex(route, alongKm, stopCount) {
+    var legDistances = route.legDistances;
+    if (!Array.isArray(legDistances) || !legDistances.length) {
+      return Math.max(1, Math.min(stopCount - 1, Math.floor(stopCount / 2)));
+    }
+    var traversedKm = 0;
+    for (var i = 0; i < legDistances.length; i++) {
+      traversedKm += Number(legDistances[i] || 0) / 1000;
+      if (alongKm <= traversedKm) {
+        return Math.max(1, Math.min(stopCount - 1, i + 1));
+      }
+    }
+    return stopCount - 1;
+  }
+
+  function routeIsBetter(candidate, current) {
+    var rank = {
+      danger: 0,
+      warn: 1,
+      clear: 2
+    };
+    if (rank[candidate.analysis.status] !== rank[current.analysis.status]) {
+      return rank[candidate.analysis.status] > rank[current.analysis.status];
+    }
+    var candidateClearance = candidate.clearance;
+    var currentClearance = current.clearance;
+    return candidateClearance > currentClearance + .05;
   }
   var LABEL = {
     danger: "Danger",
@@ -623,7 +684,7 @@
             }) + ".";
       }
       if (draftStops.length >= 2 && !routing && draftMeta) {
-        requestRoadRoute();
+        requestRoadRoute(true);
       }
       renderAll();
     }).catch(function () {
@@ -716,7 +777,34 @@
     routing = false;
   }
 
-  function requestRoadRoute() {
+  function fetchRouteCandidate(points) {
+    return fetch("/api/route", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        points: points
+      })
+    }).then(function (response) {
+      return response.json().then(function (payload) {
+        if (!response.ok) {
+          throw new Error(payload.error || "Unable to calculate route.");
+        }
+        return payload;
+      });
+    }).then(function (payload) {
+      var candidates = [payload].concat(Array.isArray(payload.alternatives) ?
+        payload.alternatives : []);
+      var selected = safestRoute(candidates);
+      if (!selected) {
+        throw new Error("Invalid route geometry.");
+      }
+      return selected;
+    });
+  }
+
+  function requestRoadRoute(preserveStops) {
     if (draftStops.length < 2) {
       return;
     }
@@ -729,45 +817,85 @@
     draftMeta = null;
     $("#mapMsg").textContent = "Finding the roads between your selected points…";
     renderAll();
-    fetch("/api/route", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        points: requestedStops
-      })
-    }).then(function (response) {
-      return response.json().then(function (payload) {
-        if (!response.ok) {
-          throw new Error(payload.error || "Unable to calculate route.");
-        }
-        return payload;
+
+    var detourAttempts = 0;
+    var failedSides = 0;
+    var detourError = null;
+
+    function searchForSafeRoute(current, routeStops) {
+      var hazard = closestHazard(current.pts);
+      if (!hazard || current.analysis.status === "clear" ||
+        detourAttempts >= 8 || routeStops.length >= 10) {
+        return Promise.resolve({
+          route: current,
+          attempted: detourAttempts > 0,
+          exhausted: Boolean(hazard && current.analysis.status !== "clear"),
+          error: detourError
+        });
+      }
+      var side = failedSides % 2 === 0 ? 1 : -1;
+      var point = detourPoint(hazard, side, Math.floor(failedSides / 2));
+      var duplicate = routeStops.some(function (stop) {
+        return Math.hypot(
+          (stop[0] - point[0]) * 110.57,
+          (stop[1] - point[1]) * 111.32 *
+            Math.cos(point[0] * Math.PI / 180)
+        ) < .5;
       });
-    }).then(function (payload) {
+      if (duplicate) {
+        failedSides++;
+        return searchForSafeRoute(current, routeStops);
+      }
+      var insertionIndex = detourStopIndex(
+        current.route,
+        hazard.alongKm,
+        routeStops.length
+      );
+      var detourStops = routeStops.slice();
+      detourStops.splice(insertionIndex, 0, point);
+      detourAttempts++;
+      $("#mapMsg").textContent = "The route is near " + hazard.h.name +
+        ". Trying a road detour (" + detourAttempts + " of 8)…";
+      return fetchRouteCandidate(detourStops).then(function (candidate) {
+        if (routeIsBetter(candidate, current)) {
+          failedSides = 0;
+          return searchForSafeRoute(candidate, detourStops);
+        }
+        failedSides++;
+        return searchForSafeRoute(current, routeStops);
+      }, function (error) {
+        detourError = error && error.message ? error.message :
+          "The road routing service could not calculate that detour.";
+        failedSides++;
+        return searchForSafeRoute(current, routeStops);
+      });
+    }
+
+    fetchRouteCandidate(requestedStops).then(function (initialRoute) {
       if (requestId !== routeRequestId) {
         return;
       }
-      var candidates = [payload].concat(Array.isArray(payload.alternatives) ?
-        payload.alternatives : []);
-      var selectedRoute = safestRoute(candidates);
-      if (!selectedRoute) {
-        throw new Error("Invalid route geometry.");
+      return searchForSafeRoute(initialRoute, requestedStops);
+    }).then(function (searchResult) {
+      if (requestId !== routeRequestId) {
+        return;
       }
+      var selectedRoute = searchResult.route;
       draft = selectedRoute.pts;
       draftMeta = selectedRoute.route;
       draftMeta.alternativeIndex = selectedRoute.index;
-      draftMeta.alternativeCount = candidates.length;
+      draftMeta.rerouted = searchResult.attempted;
       routing = false;
-      if (selectedRoute.index > 0 && selectedRoute.analysis.status === "clear") {
+      if (selectedRoute.analysis.status === "clear" && searchResult.attempted) {
+        $("#mapMsg").textContent = "Found a road route outside the marked hazard buffer.";
+      } else if (searchResult.exhausted) {
         $("#mapMsg").textContent =
-          "A safer alternate road route was selected to avoid the marked hazard buffer.";
+          (searchResult.error ? "A detour could not be calculated (" +
+            searchResult.error + "). " : "") +
+          "I couldn't find a safe road detour after trying the available options (up to 8 attempts). The safest route found is shown; change your points or follow official evacuation guidance.";
       } else if (selectedRoute.index > 0) {
         $("#mapMsg").textContent =
-          "A safer available alternate was selected, but it is still near a marked hazard. Review the warning and consider changing your route points.";
-      } else if (selectedRoute.analysis.status !== "clear") {
-        $("#mapMsg").textContent =
-          "No available alternate clears the marked hazard buffer. Showing the safest route returned; review the warning or change your route points.";
+          "A safer alternate road route was selected. Review it against nearby hazards before saving.";
       } else {
         $("#mapMsg").textContent =
           "Road route highlighted. Review it against nearby hazards before saving.";
@@ -779,7 +907,9 @@
         return;
       }
       routing = false;
-      draftStops = requestedStops.slice(0, -1);
+      if (!preserveStops) {
+        draftStops = requestedStops.slice(0, -1);
+      }
       draft = previousDraft;
       draftMeta = previousMeta;
       $("#mapMsg").textContent = (error && error.message) ||
@@ -827,6 +957,9 @@
     save();
     $("#mapMsg").textContent = "Hazard added. Every saved route was re-checked.";
     renderAll();
+    if (draftStops.length >= 2 && !routing) {
+      requestRoadRoute(true);
+    }
   }
   /* ---------- pan by dragging ---------- */
   var drag = null;
@@ -1181,7 +1314,8 @@
     } else if (draftMeta) {
       var distance = mi(Number(draftMeta.distanceMeters || 0) / 1000);
       var roads = (draftMeta.roads || []).slice(0, 4).join(", ");
-      var rerouted = draftMeta.alternativeIndex > 0 ? " · safer alternate selected" : "";
+      var rerouted = draftMeta.rerouted ? " · hazard detour selected" :
+        draftMeta.alternativeIndex > 0 ? " · safer alternate selected" : "";
       $("#draftInfo").textContent = "Road route · " + distance + rerouted + (roads ? " · via " +
         roads : "") + ". Add another point to extend the route, or save it.";
     } else {
@@ -1418,6 +1552,9 @@
     state.settings.buffer = +this.value;
     save();
     renderAll();
+    if (draftStops.length >= 2 && !routing) {
+      requestRoadRoute(true);
+    }
   });
   $("#askNotif").addEventListener("click", function () {
     if (!("Notification" in window)) {

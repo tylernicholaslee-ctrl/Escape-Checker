@@ -97,7 +97,7 @@ Both `vercel.json` and `package.json` are parsed by `npm run check` before deplo
 - The browser stores saved routes, custom hazards, and reminder settings in `localStorage`; they are not synced to a database.
 - Browser geolocation stays in the browser and is not sent to the API.
 - The fire function is server-side so the browser does not depend on the upstream ArcGIS service allowing cross-origin requests.
-- Route planning asks OSRM for available alternatives and selects the candidate with the best clearance from the marked hazard buffer. The public OSRM service does not guarantee an alternate that avoids a fire; if none is clear, the app keeps the safest returned route and shows a warning.
+- Route planning asks OSRM for available alternatives and, when needed, tries up to eight added road waypoints on both sides of a nearby hazard. It stops when it finds a route clear of the configured buffer or reports that it could not find one. The public OSRM service does not guarantee drivable detours or complete fire data, so the route is not an evacuation-safety guarantee.
 - The map uses MapLibre GL JS from unpkg and OpenFreeMap's Liberty map style.
 - Routes are created by selecting points and use OSRM road routing; the app does not provide turn-by-turn navigation or guarantee fire avoidance.
 

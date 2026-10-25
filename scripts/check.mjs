@@ -64,13 +64,13 @@ globalThis.fetch = async (url) => {
         distance: 1000,
         duration: 120,
         geometry: { coordinates: [[-118.2, 34.1], [-118.1, 34.2]] },
-        legs: [{ steps: [{ name: "Main Street" }] }],
+        legs: [{ distance: 1000, steps: [{ name: "Main Street" }] }],
       },
       {
         distance: 1200,
         duration: 140,
         geometry: { coordinates: [[-118.2, 34.1], [-118.0, 34.2]] },
-        legs: [{ steps: [{ name: "Second Street" }] }],
+        legs: [{ distance: 1200, steps: [{ name: "Second Street" }] }],
       },
     ],
   }), { status: 200 });
@@ -86,6 +86,7 @@ try {
   if (
     routeResponse.status !== 200 ||
     routePayload.roads[0] !== "Main Street" ||
+    routePayload.legDistances?.[0] !== 1000 ||
     routePayload.alternatives?.length !== 1 ||
     routePayload.alternatives[0].roads[0] !== "Second Street"
   ) {

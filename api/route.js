@@ -139,6 +139,7 @@ export async function POST(request) {
         distanceMeters: route.distance,
         durationSeconds: route.duration,
         geometry: route.geometry,
+        legDistances: (route.legs || []).map((leg) => leg.distance),
         roads: roadNames.slice(0, 12),
       };
     });
