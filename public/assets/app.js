@@ -10,6 +10,7 @@
   var draft = [];
   var draftStops = [];
   var draftMeta = null;
+  var draftRouteError = null;
   var routing = false;
   var routeRequestId = 0;
   var mode = "route";
@@ -271,7 +272,7 @@
     }
     var candidateClearance = candidate.clearance;
     var currentClearance = current.clearance;
-    return candidateClearance > currentClearance + .05;
+    return candidateClearance > currentClearance + .01;
   }
   var LABEL = {
     danger: "Danger",
@@ -774,6 +775,7 @@
     draft = [];
     draftStops = [];
     draftMeta = null;
+    draftRouteError = null;
     routing = false;
   }
 
@@ -815,17 +817,18 @@
     var requestedStops = draftStops.slice();
     routing = true;
     draftMeta = null;
+    draftRouteError = null;
     $("#mapMsg").textContent = "Finding the roads between your selected points…";
     renderAll();
 
     var detourAttempts = 0;
-    var failedSides = 0;
+    var maxDetourAttempts = Math.min(8, Math.max(0, 10 - requestedStops.length));
     var detourError = null;
 
     function searchForSafeRoute(current, routeStops) {
       var hazard = closestHazard(current.pts);
       if (!hazard || current.analysis.status === "clear" ||
-        detourAttempts >= 8 || routeStops.length >= 10) {
+        detourAttempts >= maxDetourAttempts || routeStops.length >= 10) {
         return Promise.resolve({
           route: current,
           attempted: detourAttempts > 0,
@@ -833,8 +836,8 @@
           error: detourError
         });
       }
-      var side = failedSides % 2 === 0 ? 1 : -1;
-      var point = detourPoint(hazard, side, Math.floor(failedSides / 2));
+      var side = detourAttempts % 2 === 0 ? 1 : -1;
+      var point = detourPoint(hazard, side, Math.floor(detourAttempts / 2));
       var duplicate = routeStops.some(function (stop) {
         return Math.hypot(
           (stop[0] - point[0]) * 110.57,
@@ -843,7 +846,7 @@
         ) < .5;
       });
       if (duplicate) {
-        failedSides++;
+        detourAttempts++;
         return searchForSafeRoute(current, routeStops);
       }
       var insertionIndex = detourStopIndex(
@@ -855,18 +858,15 @@
       detourStops.splice(insertionIndex, 0, point);
       detourAttempts++;
       $("#mapMsg").textContent = "The route is near " + hazard.h.name +
-        ". Trying a road detour (" + detourAttempts + " of 8)…";
+        ". Trying a road detour (" + detourAttempts + " of " + maxDetourAttempts + ")…";
       return fetchRouteCandidate(detourStops).then(function (candidate) {
         if (routeIsBetter(candidate, current)) {
-          failedSides = 0;
           return searchForSafeRoute(candidate, detourStops);
         }
-        failedSides++;
         return searchForSafeRoute(current, routeStops);
       }, function (error) {
         detourError = error && error.message ? error.message :
           "The road routing service could not calculate that detour.";
-        failedSides++;
         return searchForSafeRoute(current, routeStops);
       });
     }
@@ -885,6 +885,7 @@
       draftMeta = selectedRoute.route;
       draftMeta.alternativeIndex = selectedRoute.index;
       draftMeta.rerouted = searchResult.attempted;
+      draftMeta.detourFailed = searchResult.exhausted;
       routing = false;
       if (selectedRoute.analysis.status === "clear" && searchResult.attempted) {
         $("#mapMsg").textContent = "Found a road route outside the marked hazard buffer.";
@@ -907,13 +908,14 @@
         return;
       }
       routing = false;
+      draftRouteError = (error && error.message) ||
+        "The road routing service did not return a route.";
       if (!preserveStops) {
         draftStops = requestedStops.slice(0, -1);
       }
       draft = previousDraft;
       draftMeta = previousMeta;
-      $("#mapMsg").textContent = (error && error.message) ||
-        "I couldn't find a drivable road route to that point. Try a destination closer to a mapped road.";
+      $("#mapMsg").textContent = "Route calculation failed: " + draftRouteError;
       renderAll();
     });
   }
@@ -1321,8 +1323,18 @@
     } else {
       $("#draftInfo").textContent = "Choose another point to calculate the road route.";
     }
-    $("#draftResult").innerHTML = a ? '<div class="card">' + chip(a) + " " + esc(a.text) +
+    var resultHtml = a ? '<div class="card">' + chip(a) + " " + esc(a.text) +
       "</div>" : "";
+    if ((a && a.status === "danger") || draftRouteError ||
+      (draftMeta && draftMeta.detourFailed)) {
+      resultHtml += '<div class="banner emergency" role="alert"><strong>Do not rely on this route for evacuation.</strong>' +
+        (draftRouteError ?
+          "<p>" + esc(draftRouteError) + " No safe route was confirmed.</p>" :
+          "<p>The route still crosses a marked hazard after the available detour attempts. This app cannot confirm a safe way out.</p>") +
+        '<p>If you are in immediate danger or trapped, <a href="tel:911">call 911 in the U.S.</a> Follow evacuation orders and directions from local emergency officials; check official road-closure and fire updates. Do not drive toward a fire or through a closed road.</p>' +
+        '<p><a href="https://www.ready.gov/wildfires" target="_blank" rel="noopener noreferrer">U.S. wildfire safety guidance</a></p></div>';
+    }
+    $("#draftResult").innerHTML = resultHtml;
     $("#undo").disabled = draftStops.length === 0 || routing;
     $("#clear").disabled = draftStops.length === 0 && !routing;
     $("#saveRoute").disabled = draftStops.length < 2 || routing || !draftMeta;
@@ -1373,6 +1385,10 @@
         return ('<div class="card route-card' + (r.id === selectedId ? " sel" : "") + '">' +
           "<h3>" + esc(r.name) + "</h3>" + '<p class="muted">' + mi(routeLengthKm(r)) +
           roads + "</p>" + "<p>" + chip(a) + " " + esc(a.text) + "</p>" +
+          (a.status === "danger" ?
+            '<div class="banner emergency"><strong>Do not use this route for evacuation.</strong>' +
+            '<p>If you are in immediate danger or trapped, <a href="tel:911">call 911 in the U.S.</a> Follow evacuation orders and directions from local officials; check official fire and road-closure updates.</p></div>' :
+            "") +
           '<div class="row">' + '<button data-view="' + r.id + '">See on map</button>' +
           '<button class="danger" data-del="' + r.id + '">Delete route</button>' +
           "</div>" + "</div>");
