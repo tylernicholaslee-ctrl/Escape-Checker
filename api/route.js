@@ -91,7 +91,7 @@ export async function POST(request) {
       "?overview=full" +
       "&geometries=geojson" +
       "&steps=true" +
-      "&alternatives=false";
+      "&alternatives=true";
 
     const response = await fetch(url, {
       signal: controller.signal,
@@ -122,26 +122,31 @@ export async function POST(request) {
       );
     }
 
-    const route = payload.routes[0];
+    const routes = payload.routes.map((route) => {
+      const roadNames = [];
 
-    const roadNames = [];
+      for (const leg of route.legs || []) {
+        for (const step of leg.steps || []) {
+          const name = step.name && step.name.trim();
 
-    for (const leg of route.legs || []) {
-      for (const step of leg.steps || []) {
-        const name = step.name && step.name.trim();
-
-        if (name && !roadNames.includes(name)) {
-          roadNames.push(name);
+          if (name && !roadNames.includes(name)) {
+            roadNames.push(name);
+          }
         }
       }
-    }
+
+      return {
+        distanceMeters: route.distance,
+        durationSeconds: route.duration,
+        geometry: route.geometry,
+        roads: roadNames.slice(0, 12),
+      };
+    });
 
     return json({
       provider: "OSRM / OpenStreetMap",
-      distanceMeters: route.distance,
-      durationSeconds: route.duration,
-      geometry: route.geometry,
-      roads: roadNames.slice(0, 12),
+      ...routes[0],
+      alternatives: routes.slice(1),
     });
   } catch (error) {
     console.error("Road routing failed", error);

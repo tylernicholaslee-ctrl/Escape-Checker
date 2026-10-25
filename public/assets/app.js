@@ -127,8 +127,7 @@
     return lengthKm(r.pts || []);
   }
 
-  function analyze(pts) {
-    var buf = state.settings.buffer;
+  function closestHazard(pts) {
     var worst = null;
     if (pts.length < 2) {
       return null;
@@ -142,6 +141,15 @@
         };
       }
     });
+    return worst;
+  }
+
+  function analyze(pts) {
+    var buf = state.settings.buffer;
+    var worst = closestHazard(pts);
+    if (pts.length < 2) {
+      return null;
+    }
     if (!worst) {
       return {
         status: "clear",
@@ -165,6 +173,44 @@
       status: "clear",
       text: "No marked hazard within " + mi(buf) + " of this route."
     };
+  }
+
+  function safestRoute(routes) {
+    var statusRank = {
+      danger: 0,
+      warn: 1,
+      clear: 2
+    };
+    var best = null;
+    routes.forEach(function (route, index) {
+      var coordinates = route.geometry && route.geometry.coordinates;
+      if (!Array.isArray(coordinates) || coordinates.length < 2) {
+        return;
+      }
+      var pts = coordinates.map(function (point) {
+        return [Number(point[1]), Number(point[0])];
+      }).filter(function (point) {
+        return Number.isFinite(point[0]) && Number.isFinite(point[1]);
+      });
+      if (pts.length < 2) {
+        return;
+      }
+      var analysis = analyze(pts);
+      var hazard = closestHazard(pts);
+      var clearance = hazard ? hazard.clr : Infinity;
+      if (!best ||
+        statusRank[analysis.status] > statusRank[best.analysis.status] ||
+        (analysis.status === best.analysis.status && clearance > best.clearance)) {
+        best = {
+          route: route,
+          pts: pts,
+          analysis: analysis,
+          clearance: clearance,
+          index: index
+        };
+      }
+    });
+    return best;
   }
   var LABEL = {
     danger: "Danger",
@@ -576,6 +622,9 @@
               minute: "2-digit"
             }) + ".";
       }
+      if (draftStops.length >= 2 && !routing && draftMeta) {
+        requestRoadRoute();
+      }
       renderAll();
     }).catch(function () {
       if (status) {
@@ -699,25 +748,30 @@
       if (requestId !== routeRequestId) {
         return;
       }
-      var coordinates = payload.geometry && payload.geometry.coordinates;
-      if (!Array.isArray(coordinates) || coordinates.length < 2) {
+      var candidates = [payload].concat(Array.isArray(payload.alternatives) ?
+        payload.alternatives : []);
+      var selectedRoute = safestRoute(candidates);
+      if (!selectedRoute) {
         throw new Error("Invalid route geometry.");
       }
-      draft = coordinates.map(function (point) {
-        return [
-          Number(point[1]),
-          Number(point[0])
-        ];
-      }).filter(function (point) {
-        return (Number.isFinite(point[0]) && Number.isFinite(point[1]));
-      });
-      if (draft.length < 2) {
-        throw new Error("Invalid route geometry.");
-      }
-      draftMeta = payload;
+      draft = selectedRoute.pts;
+      draftMeta = selectedRoute.route;
+      draftMeta.alternativeIndex = selectedRoute.index;
+      draftMeta.alternativeCount = candidates.length;
       routing = false;
-      $("#mapMsg").textContent =
-        "Road route highlighted. Review it against nearby hazards before saving.";
+      if (selectedRoute.index > 0 && selectedRoute.analysis.status === "clear") {
+        $("#mapMsg").textContent =
+          "A safer alternate road route was selected to avoid the marked hazard buffer.";
+      } else if (selectedRoute.index > 0) {
+        $("#mapMsg").textContent =
+          "A safer available alternate was selected, but it is still near a marked hazard. Review the warning and consider changing your route points.";
+      } else if (selectedRoute.analysis.status !== "clear") {
+        $("#mapMsg").textContent =
+          "No available alternate clears the marked hazard buffer. Showing the safest route returned; review the warning or change your route points.";
+      } else {
+        $("#mapMsg").textContent =
+          "Road route highlighted. Review it against nearby hazards before saving.";
+      }
       fitTo(draft);
       renderAll();
     }).catch(function (error) {
@@ -1127,8 +1181,9 @@
     } else if (draftMeta) {
       var distance = mi(Number(draftMeta.distanceMeters || 0) / 1000);
       var roads = (draftMeta.roads || []).slice(0, 4).join(", ");
-      $("#draftInfo").textContent = "Road route · " + distance + (roads ? " · via " + roads :
-        "") + ". Add another point to extend the route, or save it.";
+      var rerouted = draftMeta.alternativeIndex > 0 ? " · safer alternate selected" : "";
+      $("#draftInfo").textContent = "Road route · " + distance + rerouted + (roads ? " · via " +
+        roads : "") + ". Add another point to extend the route, or save it.";
     } else {
       $("#draftInfo").textContent = "Choose another point to calculate the road route.";
     }

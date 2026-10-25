@@ -4,6 +4,7 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GET as getFires } from "../api/fires.js";
 import { GET as getHealth } from "../api/healthz.js";
+import { POST as postRoute } from "../api/route.js";
 
 const root = fileURLToPath(new URL("../public/", import.meta.url));
 const port = Number(process.env.PORT || 3000);
@@ -61,6 +62,20 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/fires") {
       await sendWebResponse(res, await getFires());
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/route") {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const request = new Request(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": req.headers["content-type"] || "application/json",
+        },
+        body: Buffer.concat(chunks),
+      });
+      await sendWebResponse(res, await postRoute(request));
       return;
     }
 

@@ -8,6 +8,7 @@ A small emergency-route planning web app that compares saved routes with current
 .
 ├── api/
 │   ├── fires.js        # Vercel Function: proxies the NIFC/WFIGS incident feed
+│   ├── route.js        # Vercel Function: proxies OSRM road routing and alternatives
 │   └── healthz.js      # Vercel Function: health check
 ├── public/
 │   ├── assets/
@@ -75,6 +76,7 @@ The deployed routes are:
 - `/` — application
 - `/api/healthz` — health check
 - `/api/fires` — current NIFC/WFIGS incidents
+- `/api/route` — OSRM road routes and available alternatives
 
 ## Vercel configuration
 
@@ -95,8 +97,9 @@ Both `vercel.json` and `package.json` are parsed by `npm run check` before deplo
 - The browser stores saved routes, custom hazards, and reminder settings in `localStorage`; they are not synced to a database.
 - Browser geolocation stays in the browser and is not sent to the API.
 - The fire function is server-side so the browser does not depend on the upstream ArcGIS service allowing cross-origin requests.
+- Route planning asks OSRM for available alternatives and selects the candidate with the best clearance from the marked hazard buffer. The public OSRM service does not guarantee an alternate that avoids a fire; if none is clear, the app keeps the safest returned route and shows a warning.
 - The map uses MapLibre GL JS from unpkg and OpenFreeMap's Liberty map style.
-- Route geometry is manually drawn and does not provide road-snapped or turn-by-turn navigation.
+- Routes are created by selecting points and use OSRM road routing; the app does not provide turn-by-turn navigation or guarantee fire avoidance.
 
 ## What changed from the original repository
 
